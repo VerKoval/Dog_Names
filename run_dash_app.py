@@ -3,14 +3,26 @@ import pandas as pd
 import plotly.express as px
 import dash_bootstrap_components as dbc
 import json
-import dash
 
-# READ ZIPCODE AS TYPE STR
 dog_data = pd.read_csv('NYC_Dog_Licensing_Dataset.csv', dtype={'ZipCode': str}) #enter path to Dataset.csv file
 
 # Filter out unwanted names
 unwanted_names = ['UNKNOWN', 'NAME NOT PROVIDED', 'NAME', 'NOT', 'NONE', 'DOG']
 dog_data = dog_data[~dog_data['AnimalName'].isin(unwanted_names) & ~dog_data['BreedName'].isin(['Unknown'])]
+
+# Pre-calculate the aggregated counts for each option
+agg_animal_name = dog_data['AnimalName'].value_counts().reset_index()
+agg_animal_name.columns = ['AnimalName', 'count']
+agg_animal_name = agg_animal_name[agg_animal_name['count'] > 1]
+
+agg_breed_name = dog_data['BreedName'].value_counts().reset_index()
+agg_breed_name.columns = ['BreedName', 'count']
+agg_breed_name = agg_breed_name[agg_breed_name['count'] > 1]
+
+agg_zip_code = dog_data['ZipCode'].value_counts().reset_index()
+agg_zip_code.columns = ['ZipCode', 'count']
+agg_zip_code = agg_zip_code[agg_zip_code['count'] > 1]
+
 
 # GeoJSON file- Lats and longs of each zip code (polygods)
 nyc_geojson_path = 'nyc-zip-code-tabulation-areas-polygons.geojson'  #enter path to geojson file
@@ -37,6 +49,7 @@ top_names_info = top_names.groupby('ZipCode')['Info'].apply(lambda x: ', '.join(
 top_names_info['PO_NAME'] = top_names_info['ZipCode'].map(nyc_zip_codes)
 top_names_info['Text'] = 'Neighborhood: ' + top_names_info['PO_NAME'] + '<br>' + 'Top Dogs: ' + top_names_info['Info']
 
+
 external_stylesheets = [dbc.themes.SKETCHY]
 app = Dash(__name__, external_stylesheets=external_stylesheets)
 
@@ -50,7 +63,7 @@ app.layout = dbc.Container([
             dash_table.DataTable(data=dog_data.to_dict('records'), page_size=10, style_table={'overflowX': 'auto'})
         ], width=12),
         dbc.Col([
-            dcc.Graph(figure={}, id='controls-and-graph')
+            dcc.Graph(figure={}, id='controls-and-graph', config={'staticPlot': False, 'scrollZoom': True})
         ], width=6),
         dbc.Col([
             dcc.Graph(figure={}, id='choropleth-map')
@@ -72,29 +85,31 @@ app.layout = dbc.Container([
     ])
 ], fluid=True)
 
-@callback(
-    [Output(component_id='controls-and-graph', component_property='figure'),
-     Output(component_id='choropleth-map', component_property='figure')],
+figures_data = {
+    'AnimalName': px.bar(agg_animal_name, y='AnimalName', x='count', orientation='h').update_yaxes(categoryorder='total descending'),
+    'BreedName': px.bar(agg_breed_name, y='BreedName', x='count', orientation='h').update_yaxes(categoryorder='total descending'),
+    'ZipCode': px.bar(agg_zip_code, y='ZipCode', x='count', orientation='h').update_yaxes(categoryorder='total descending')
+}
+
+choropleth_fig = px.choropleth(
+    top_names_info,  # df
+    geojson=nyc_geojson,  # GeoJSON
+    locations='ZipCode',  # df ZipCode
+    color='ZipCode',  # just used for differentiating areas
+    featureidkey="properties.postalCode",  # the key used for the zip codes in  GeoJSON
+    hover_name='Text'  # the info to display when hovering
+)
+choropleth_fig.update_geos(fitbounds="locations")
+
+@callback([
+    Output(component_id='controls-and-graph', component_property='figure'),
+    Output(component_id='choropleth-map', component_property='figure')],
     Input(component_id='controls-and-radio-item', component_property='value')
 )
 def update_graph(col_chosen):
-    # Update the graph
-    fig1 = px.histogram(dog_data, x=col_chosen).update_xaxes(categoryorder='total descending')
-    
-    # Chloropleth
-    choropleth_fig = px.choropleth(
-        top_names_info,  # df
-        geojson=nyc_geojson,  # GeoJSON
-        locations='ZipCode',  # df ZipCode
-        color='ZipCode',  # just used for differentiating areas
-        featureidkey="properties.postalCode",  # the key used for the zip codes in  GeoJSON
-        hover_name='Text'  # the info to display when hovering
-
-    )
-    
-    choropleth_fig.update_geos(fitbounds="locations")
-
-    return fig1, choropleth_fig
+    # Set initial range for y-axis to display only the first 12 entries
+    figures_data[col_chosen].update_layout(yaxis=dict(range=[0, 12]))
+    return figures_data[col_chosen], choropleth_fig
 
 if __name__ == '__main__':
     app.run(debug=True)
